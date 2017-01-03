@@ -39,6 +39,7 @@ enum OBJECT_TRACK_ERROR {
     OBJTRACK_INVALID_OBJECT,           // Object used that has never been created
     OBJTRACK_DESCRIPTOR_POOL_MISMATCH, // Descriptor Pools specified incorrectly
     OBJTRACK_COMMAND_POOL_MISMATCH,    // Command Pools specified incorrectly
+    OBJTRACK_ALLOCATOR_MISMATCH,       // Created with custom allocator but destroyed without
 };
 
 // Object Status -- used to track state of individual objects
@@ -52,6 +53,7 @@ enum ObjectStatusFlagBits {
     OBJSTATUS_DEPTH_STENCIL_BOUND = 0x00000010,      // Viewport state object has been bound
     OBJSTATUS_GPU_MEM_MAPPED = 0x00000020,           // Memory object is currently mapped
     OBJSTATUS_COMMAND_BUFFER_SECONDARY = 0x00000040, // Command Buffer is of type SECONDARY
+    OBJSTATUS_CUSTOM_ALLOCATOR = 0x00000080,         // Allocated with custom allocator
 };
 
 // Object and state information structure
@@ -79,6 +81,7 @@ struct instance_extension_enables {
     bool mir_enabled;
     bool android_enabled;
     bool win32_enabled;
+    bool display_enabled;
 };
 
 typedef std::unordered_map<uint64_t, OBJTRACK_NODE *> object_map_type;
@@ -92,6 +95,8 @@ struct layer_data {
     debug_report_data *report_data;
     std::vector<VkDebugReportCallbackEXT> logging_callback;
     bool wsi_enabled;
+    bool wsi_display_swapchain_enabled;
+    bool wsi_display_extension_enabled;
     bool objtrack_extensions_enabled;
 
     // The following are for keeping track of the temporary callbacks that can
@@ -109,15 +114,16 @@ struct layer_data {
     // Map of queue information structures, one per queue
     std::unordered_map<VkQueue, OT_QUEUE_INFO *> queue_info_map;
 
+    VkLayerDispatchTable dispatch_table;
     // Default constructor
     layer_data()
         : instance(nullptr), physical_device(nullptr), num_objects{}, num_total_objects(0), report_data(nullptr),
-          wsi_enabled(false), objtrack_extensions_enabled(false), num_tmp_callbacks(0), tmp_dbg_create_infos(nullptr),
-		  tmp_callbacks(nullptr), object_map{} {
+          wsi_enabled(false), wsi_display_swapchain_enabled(false), wsi_display_extension_enabled(false),
+          objtrack_extensions_enabled(false), num_tmp_callbacks(0), tmp_dbg_create_infos(nullptr), tmp_callbacks(nullptr),
+          object_map{}, dispatch_table{} {
         object_map.resize(VK_DEBUG_REPORT_OBJECT_TYPE_RANGE_SIZE_EXT + 1);
     }
 };
-
 
 static std::unordered_map<void *, struct instance_extension_enables> instanceExtMap;
 static std::unordered_map<void *, layer_data *> layer_data_map;

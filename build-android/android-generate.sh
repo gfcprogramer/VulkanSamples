@@ -21,14 +21,13 @@ cd $dir
 rm -rf generated
 mkdir -p generated/include generated/common
 
-python ../vk-generate.py Android dispatch-table-ops layer > generated/include/vk_dispatch_table_helper.h
+python3 ../scripts/vk_helper.py --gen_struct_wrappers ../include/vulkan/vulkan.h --abs_out_dir generated/include
 
-python ../vk_helper.py --gen_enum_string_helper ../include/vulkan/vulkan.h --abs_out_dir generated/include
-python ../vk_helper.py --gen_struct_wrappers ../include/vulkan/vulkan.h --abs_out_dir generated/include
-
-python ../vk-layer-generate.py Android unique_objects ../include/vulkan/vulkan.h > generated/include/unique_objects.cpp
-( cd generated/include; python ../../../genvk.py threading -registry ../../../vk.xml thread_check.h )
-( cd generated/include; python ../../../genvk.py paramchecker -registry ../../../vk.xml parameter_validation.h )
+( cd generated/include; python3 ../../../scripts/lvl_genvk.py -registry ../../../scripts/vk.xml vk_enum_string_helper.h )
+( cd generated/include; python3 ../../../scripts/lvl_genvk.py -registry ../../../scripts/vk.xml vk_dispatch_table_helper.h )
+( cd generated/include; python3 ../../../scripts/lvl_genvk.py -registry ../../../scripts/vk.xml thread_check.h )
+( cd generated/include; python3 ../../../scripts/lvl_genvk.py -registry ../../../scripts/vk.xml parameter_validation.h )
+( cd generated/include; python3 ../../../scripts/lvl_genvk.py -registry ../../../scripts/vk.xml unique_objects_wrappers.h )
 
 cp -f ../layers/vk_layer_config.cpp   generated/common/
 cp -f ../layers/vk_layer_extension_utils.cpp  generated/common/
@@ -40,7 +39,7 @@ cp -f ../layers/descriptor_sets.cpp   generated/common/
 # 1 to 1 correspondence -- one layer one source file; additional files are copied
 # at fixup step
 declare layers=(core_validation image object_tracker parameter_validation swapchain threading unique_objects)
-declare src_dirs=(../layers ../layers ../layers ../layers ../layers ../layers generated/include)
+declare src_dirs=(../layers ../layers ../layers ../layers ../layers ../layers ../layers)
 
 SRC_ROOT=generated/layer-src
 BUILD_ROOT=generated/gradle-build
@@ -62,8 +61,5 @@ done
 cp  generated/common/descriptor_sets.cpp ${SRC_ROOT}/core_validation/descriptor_sets.cpp
 cp  generated/include/vk_safe_struct.cpp ${SRC_ROOT}/core_validation/vk_safe_struct.cpp
 mv  generated/include/vk_safe_struct.cpp ${SRC_ROOT}/unique_objects/vk_safe_struct.cpp
-
-# fixup - remove copied files from generated/include
-rm  generated/include/unique_objects.cpp
 
 exit 0

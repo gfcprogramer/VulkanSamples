@@ -5,61 +5,45 @@ cmake_minimum_required(VERSION 2.8.11)
 project (VULKAN_SAMPLES)
 # set (CMAKE_VERBOSE_MAKEFILE 1)
 
+# The API_NAME allows renaming builds to avoid conflicts with installed SDKs
 # The MAJOR number of the version we're building, used in naming
-# vulkan-<major>.dll (and other files).
+# <api-name>-<major>.dll (and other files).
+set(API_NAME "Vulkan" CACHE STRING "API name to use when building")
 set(MAJOR "1")
+string(TOLOWER ${API_NAME} API_LOWERCASE)
+
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(PythonInterp 3 REQUIRED)
 
-# Set CMAKE_SYSTEM_NAME to Android if we're building Android Studio project.
-if(ANDROID)
-    set (CMAKE_SYSTEM_NAME Android)
-endif()
-
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    add_definitions(-DVK_USE_PLATFORM_WIN32_KHR -DWIN32_LEAN_AND_MEAN)
-    set(DisplayServer Win32)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
-    add_definitions(-DVK_USE_PLATFORM_ANDROID_KHR)
-    set(DisplayServer Android)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    #   Note: Supported configurations are XCB, XCB + Xlib, Wayland.  
-    #         MIR is stubbed and untested 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    include(FindPkgConfig)
     option(BUILD_WSI_XCB_SUPPORT "Build XCB WSI support" ON)
     option(BUILD_WSI_XLIB_SUPPORT "Build Xlib WSI support" ON)
-    option(BUILD_WSI_WAYLAND_SUPPORT "Build Wayland WSI support" OFF)
-    option(BUILD_WSI_MIR_SUPPORT "Build Mir WSI support" OFF)
+    option(BUILD_WSI_WAYLAND_SUPPORT "Build Wayland WSI support" ON)
+    option(BUILD_WSI_MIR_SUPPORT "Build Mir WSI support" ON)
+    set(DEMOS_WSI_SELECTION XCB)
 
     if (BUILD_WSI_XCB_SUPPORT)
-        add_definitions(-DVK_USE_PLATFORM_XCB_KHR)
-        set(DisplayServer Xcb)
+        find_package(XCB REQUIRED)
     endif()
 
     if (BUILD_WSI_XLIB_SUPPORT)
-        add_definitions(-DVK_USE_PLATFORM_XLIB_KHR)
-        set(DisplayServer Xlib)
+        find_package(X11 REQUIRED)
     endif()
 
     if (BUILD_WSI_WAYLAND_SUPPORT)
-        add_definitions(-DVK_USE_PLATFORM_WAYLAND_KHR)
-        set(DisplayServer Wayland)
+        find_package(Wayland REQUIRED)
     endif()
 
     if (BUILD_WSI_MIR_SUPPORT)
-        add_definitions(-DVK_USE_PLATFORM_MIR_KHR)
-        set(DisplayServer Mir)
+        find_package(Mir REQUIRED)
     endif()
-else()
-    message(FATAL_ERROR "Unsupported Platform!")
 endif()
 
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake")
+set(SCRIPTS_DIR "${CMAKE_SOURCE_DIR}/scripts")
 
 # Header file for CMake settings
 include_directories("${PROJECT_SOURCE_DIR}/include")
-
-if(NOT WIN32)
-    include(FindPkgConfig)
-endif()
 
 if (CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang")
     set(COMMON_COMPILE_FLAGS "-Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers")
@@ -78,7 +62,6 @@ if(WIN32)
 endif()
 
 if(NOT WIN32)
-    find_package(XCB REQUIRED)
     set (BUILDTGT_DIR build)
     set (BINDATA_DIR Bin)
     set (LIBSOURCE_DIR Lib)
@@ -109,6 +92,7 @@ option(BUILD_TESTS "Build tests" ON)
 option(BUILD_LAYERS "Build layers" ON)
 option(BUILD_DEMOS "Build demos" ON)
 option(BUILD_VKJSON "Build vkjson" ON)
+option(BUILD_UTILITIES "Build WSIWindow and Teapots" ON)
 option(CUSTOM_GLSLANG_BIN_ROOT "Use the user defined GLSLANG_BINARY_ROOT" OFF)
 option(CUSTOM_SPIRV_TOOLS_BIN_ROOT "Use the user defined SPIRV_TOOLS_BINARY_ROOT" OFF)
 
@@ -271,13 +255,23 @@ set (PYTHON_CMD ${PYTHON_EXECUTABLE})
 
 if(NOT WIN32)
     include(GNUInstallDirs)
-    add_definitions(-DSYSCONFDIR="${CMAKE_INSTALL_SYSCONFDIR}")
-    add_definitions(-DDATADIR="${CMAKE_INSTALL_DATADIR}")
-    if (CMAKE_INSTALL_PREFIX STREQUAL "/usr/local")
-    elseif (CMAKE_INSTALL_PREFIX STREQUAL "")
-    else()
-        add_definitions(-DLOCALPREFIX="${CMAKE_INSTALL_PREFIX}")
+
+    add_definitions(-DSYSCONFDIR="${CMAKE_INSTALL_FULL_SYSCONFDIR}")
+    add_definitions(-DDATADIR="${CMAKE_INSTALL_FULL_DATADIR}")
+
+    # Make sure /etc is searched by the loader
+    if (NOT (CMAKE_INSTALL_FULL_SYSCONFDIR STREQUAL "/etc"))
+        add_definitions(-DEXTRASYSCONFDIR="/etc")
     endif()
+
+    # Make sure /usr/share is searched by the loader
+    if (NOT (CMAKE_INSTALL_FULL_DATADIR STREQUAL "/usr/share"))
+        add_definitions(-DEXTRADATADIR="/usr/share")
+    endif()
+endif()
+
+if(UNIX)
+    install(DIRECTORY "${PROJECT_SOURCE_DIR}/include/vulkan" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 endif()
 
 # loader: Generic VULKAN ICD loader
@@ -331,6 +325,25 @@ else()
     include_directories("/usr/include/vulkan")
 endif()
 
-add_subdirectory(API-Samples)
+option(BUILD_API_SAMPLES "Build API Samples " ON)
+option(BUILD_SAMPLE_LAYERS "Build Sample Layers " ON)
+
+if((CMAKE_SYSTEM_NAME STREQUAL "Linux") AND (NOT BUILD_WSI_XCB_SUPPORT))
+    set(BUILD_API_SAMPLES OFF)
+    set(BUILD_SAMPLE_LAYERS OFF)
+    set(BUILD_UTILITIES OFF)
+endif()
+
+if(BUILD_UTILITIES)
+    add_subdirectory(Utilities)
+endif()
+
+if (BUILD_API_SAMPLES)
+    add_subdirectory(API-Samples)
+endif()
+
 add_subdirectory(Sample-Programs/Hologram)
-add_subdirectory(Layer-Samples/Overlay)
+
+if (BUILD_SAMPLE_LAYERS)
+    add_subdirectory(Layer-Samples/Overlay)
+endif()

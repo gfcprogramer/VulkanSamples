@@ -21,6 +21,7 @@
 #define CORE_VALIDATION_DESCRIPTOR_SETS_H_
 
 // Check for noexcept support
+#ifndef NOEXCEPT
 #if defined(__clang__)
 #if __has_feature(cxx_noexcept)
 #define HAS_NOEXCEPT
@@ -40,8 +41,10 @@
 #else
 #define NOEXCEPT
 #endif
+#endif
 
 #include "core_validation_error_enums.h"
+#include "vk_validation_error_messages.h"
 #include "core_validation_types.h"
 #include "vk_layer_logging.h"
 #include "vk_layer_utils.h"
@@ -64,34 +67,39 @@
  *
  * Index vs Binding - A layout is created with an array of VkDescriptorSetLayoutBinding
  *  where each array index will have a corresponding binding# that is defined in that struct.
- *  This class, therefore, provides utility functions where you can retrieve data for
- *  layout bindings based on either the original index into the pBindings array, or based
- *  on the binding#.
- *  Typically if you want to cover all of the bindings in a layout, you can do that by
- *   iterating over GetBindingCount() bindings and using the Get*FromIndex() functions.
- *  Otherwise, you can use the Get*FromBinding() functions to just grab binding info
- *   for a particular binding#.
+ *  The binding#, then, is decoupled from VkDescriptorSetLayoutBinding index, which allows
+ *  bindings to be defined out-of-order. This DescriptorSetLayout class, however, stores
+ *  the bindings internally in-order. This is useful for operations which may "roll over"
+ *  from a single binding to the next consecutive binding.
  *
- * Global Index - The "Index" referenced above is the index into the original pBindings
- *  array. So there are as many indices as there are bindings.
+ *  Note that although the bindings are stored in-order, there still may be "gaps" in the
+ *  binding#. For example, if the binding creation order is 8, 7, 10, 3, 4, then the
+ *  internal binding array will have five entries stored in binding order 3, 4, 7, 8, 10.
+ *  To process all of the bindings in a layout you can iterate from 0 to GetBindingCount()
+ *  and use the Get*FromIndex() functions for each index. To just process a single binding,
+ *  use the Get*FromBinding() functions.
+ *
+ * Global Index - The binding vector index has as many indices as there are bindings.
  *  This class also has the concept of a Global Index. For the global index functions,
  *  there are as many global indices as there are descriptors in the layout.
  *  For the global index, consider all of the bindings to be a flat array where
- *  descriptor 0 of pBinding[0] is index 0 and each descriptor in the layout increments
- *  from there. So if pBinding[0] in this example had descriptorCount of 10, then
- *  the GlobalStartIndex of pBinding[1] will be 10 where 0-9 are the global indices
- *  for pBinding[0].
+ *  descriptor 0 of of the lowest binding# is index 0 and each descriptor in the layout
+ *  increments from there. So if the lowest binding# in this example had descriptorCount of
+ *  10, then the GlobalStartIndex of the 2nd lowest binding# will be 10 where 0-9 are the
+ *  global indices for the lowest binding#.
  */
 namespace cvdescriptorset {
 class DescriptorSetLayout {
   public:
     // Constructors and destructor
-    DescriptorSetLayout(debug_report_data *report_data, const VkDescriptorSetLayoutCreateInfo *p_create_info,
-                        const VkDescriptorSetLayout layout);
+    DescriptorSetLayout(const VkDescriptorSetLayoutCreateInfo *p_create_info, const VkDescriptorSetLayout layout);
+    // Validate create info - should be called prior to creation
+    static bool ValidateCreateInfo(debug_report_data *, const VkDescriptorSetLayoutCreateInfo *);
     // Straightforward Get functions
     VkDescriptorSetLayout GetDescriptorSetLayout() const { return layout_; };
     uint32_t GetTotalDescriptorCount() const { return descriptor_count_; };
     uint32_t GetDynamicDescriptorCount() const { return dynamic_descriptor_count_; };
+    // For a given binding, return the number of descriptors in that binding and all successive bindings
     uint32_t GetBindingCount() const { return binding_count_; };
     // Fill passed-in set with bindings
     void FillBindingSet(std::unordered_set<uint32_t> *) const;
@@ -103,8 +111,7 @@ class DescriptorSetLayout {
     // Return true if binding 1 beyond given exists and has same type, stageFlags & immutable sampler use
     bool IsNextBindingConsistent(const uint32_t) const;
     // Various Get functions that can either be passed a binding#, which will
-    //  be automatically translated into the appropriate index from the original
-    //  pBindings array, or the index# can be passed in directly
+    //  be automatically translated into the appropriate index, or the index# can be passed in directly
     VkDescriptorSetLayoutBinding const *GetDescriptorSetLayoutBindingPtrFromBinding(const uint32_t) const;
     VkDescriptorSetLayoutBinding const *GetDescriptorSetLayoutBindingPtrFromIndex(const uint32_t) const;
     uint32_t GetDescriptorCountFromBinding(const uint32_t) const;
@@ -115,6 +122,15 @@ class DescriptorSetLayout {
     VkShaderStageFlags GetStageFlagsFromBinding(const uint32_t) const;
     VkSampler const *GetImmutableSamplerPtrFromBinding(const uint32_t) const;
     VkSampler const *GetImmutableSamplerPtrFromIndex(const uint32_t) const;
+    // For a given binding and array index, return the corresponding index into the dynamic offset array
+    int32_t GetDynamicOffsetIndexFromBinding(uint32_t binding) const {
+        auto dyn_off = binding_to_dynamic_array_idx_map_.find(binding);
+        if (dyn_off == binding_to_dynamic_array_idx_map_.end()) {
+            assert(0); // Requesting dyn offset for invalid binding/array idx pair
+            return -1;
+        }
+        return dyn_off->second;
+    }
     // For a particular binding, get the global index
     //  These calls should be guarded by a call to "HasBinding(binding)" to verify that the given binding exists
     uint32_t GetGlobalStartIndexFromBinding(const uint32_t) const;
@@ -125,9 +141,11 @@ class DescriptorSetLayout {
 
   private:
     VkDescriptorSetLayout layout_;
-    std::unordered_map<uint32_t, uint32_t> binding_to_index_map_;
+    std::map<uint32_t, uint32_t> binding_to_index_map_;
     std::unordered_map<uint32_t, uint32_t> binding_to_global_start_index_map_;
     std::unordered_map<uint32_t, uint32_t> binding_to_global_end_index_map_;
+    // For a given binding map to associated index in the dynamic offset array
+    std::unordered_map<uint32_t, uint32_t> binding_to_dynamic_array_idx_map_;
     // VkDescriptorSetLayoutCreateFlags flags_;
     uint32_t binding_count_; // # of bindings in this layout
     std::vector<safe_VkDescriptorSetLayoutBinding> bindings_;
@@ -165,7 +183,8 @@ class Descriptor {
 // Shared helper functions - These are useful because the shared sampler image descriptor type
 //  performs common functions with both sampler and image descriptors so they can share their common functions
 bool ValidateSampler(const VkSampler, const core_validation::layer_data *);
-bool ValidateImageUpdate(VkImageView, VkImageLayout, VkDescriptorType, const core_validation::layer_data *, std::string *);
+bool ValidateImageUpdate(VkImageView, VkImageLayout, VkDescriptorType, const core_validation::layer_data *,
+                         UNIQUE_VALIDATION_ERROR_CODE *, std::string *);
 
 class SamplerDescriptor : public Descriptor {
   public:
@@ -269,7 +288,7 @@ bool ValidateAllocateDescriptorSets(const debug_report_data *, const VkDescripto
                                     const core_validation::layer_data *, AllocateDescriptorSetsData *);
 // Update state based on allocating new descriptorsets
 void PerformAllocateDescriptorSets(const VkDescriptorSetAllocateInfo *, const VkDescriptorSet *, const AllocateDescriptorSetsData *,
-                                   std::unordered_map<VkDescriptorPool, DESCRIPTOR_POOL_NODE *> *,
+                                   std::unordered_map<VkDescriptorPool, DESCRIPTOR_POOL_STATE *> *,
                                    std::unordered_map<VkDescriptorSet, cvdescriptorset::DescriptorSet *> *,
                                    const core_validation::layer_data *);
 
@@ -293,9 +312,7 @@ void PerformAllocateDescriptorSets(const VkDescriptorSetAllocateInfo *, const Vk
  */
 class DescriptorSet : public BASE_NODE {
   public:
-    using BASE_NODE::in_use;
-    using BASE_NODE::cb_bindings;
-    DescriptorSet(const VkDescriptorSet, const DescriptorSetLayout *, const core_validation::layer_data *);
+    DescriptorSet(const VkDescriptorSet, const VkDescriptorPool, const DescriptorSetLayout *, const core_validation::layer_data *);
     ~DescriptorSet();
     // A number of common Get* functions that return data based on layout from which this set was created
     uint32_t GetTotalDescriptorCount() const { return p_layout_ ? p_layout_->GetTotalDescriptorCount() : 0; };
@@ -316,6 +333,10 @@ class DescriptorSet : public BASE_NODE {
     uint32_t GetDescriptorCountFromBinding(const uint32_t binding) const {
         return p_layout_ ? p_layout_->GetDescriptorCountFromBinding(binding) : 0;
     };
+    // Return index into dynamic offset array for given binding
+    int32_t GetDynamicOffsetIndexFromBinding(uint32_t binding) const {
+        return p_layout_ ? p_layout_->GetDynamicOffsetIndexFromBinding(binding) : -1;
+    }
     // Return true if given binding is present in this set
     bool HasBinding(const uint32_t binding) const { return p_layout_->HasBinding(binding); };
     // Is this set compatible with the given layout?
@@ -329,11 +350,13 @@ class DescriptorSet : public BASE_NODE {
 
     // Descriptor Update functions. These functions validate state and perform update separately
     // Validate contents of a WriteUpdate
-    bool ValidateWriteUpdate(const debug_report_data *, const VkWriteDescriptorSet *, std::string *);
+    bool ValidateWriteUpdate(const debug_report_data *, const VkWriteDescriptorSet *, UNIQUE_VALIDATION_ERROR_CODE *,
+                             std::string *);
     // Perform a WriteUpdate whose contents were just validated using ValidateWriteUpdate
     void PerformWriteUpdate(const VkWriteDescriptorSet *);
     // Validate contents of a CopyUpdate
-    bool ValidateCopyUpdate(const debug_report_data *, const VkCopyDescriptorSet *, const DescriptorSet *, std::string *);
+    bool ValidateCopyUpdate(const debug_report_data *, const VkCopyDescriptorSet *, const DescriptorSet *,
+                            UNIQUE_VALIDATION_ERROR_CODE *, std::string *);
     // Perform a CopyUpdate whose contents were just validated using ValidateCopyUpdate
     void PerformCopyUpdate(const VkCopyDescriptorSet *, const DescriptorSet *);
 
@@ -342,7 +365,7 @@ class DescriptorSet : public BASE_NODE {
     // Return unordered_set of all command buffers that this set is bound to
     std::unordered_set<GLOBAL_CB_NODE *> GetBoundCmdBuffers() const { return cb_bindings; }
     // Bind given cmd_buffer to this descriptor set
-    void BindCommandBuffer(GLOBAL_CB_NODE *, const std::unordered_set<uint32_t> &);
+    void BindCommandBuffer(GLOBAL_CB_NODE *, const std::map<uint32_t, descriptor_req> &);
     // If given cmd_buffer is in the cb_bindings set, remove it
     void RemoveBoundCommandBuffer(GLOBAL_CB_NODE *cb_node) { cb_bindings.erase(cb_node); }
     VkSampler const *GetImmutableSamplerPtrFromBinding(const uint32_t index) const {
@@ -359,15 +382,18 @@ class DescriptorSet : public BASE_NODE {
     bool IsUpdated() const { return some_update_; };
 
   private:
-    bool VerifyWriteUpdateContents(const VkWriteDescriptorSet *, const uint32_t, std::string *) const;
+    bool VerifyWriteUpdateContents(const VkWriteDescriptorSet *, const uint32_t, UNIQUE_VALIDATION_ERROR_CODE *,
+                                   std::string *) const;
     bool VerifyCopyUpdateContents(const VkCopyDescriptorSet *, const DescriptorSet *, VkDescriptorType, uint32_t,
-                                  std::string *) const;
-    bool ValidateBufferUsage(BUFFER_NODE const *, VkDescriptorType, std::string *) const;
-    bool ValidateBufferUpdate(VkDescriptorBufferInfo const *, VkDescriptorType, std::string *) const;
+                                  UNIQUE_VALIDATION_ERROR_CODE *, std::string *) const;
+    bool ValidateBufferUsage(BUFFER_STATE const *, VkDescriptorType, UNIQUE_VALIDATION_ERROR_CODE *, std::string *) const;
+    bool ValidateBufferUpdate(VkDescriptorBufferInfo const *, VkDescriptorType, UNIQUE_VALIDATION_ERROR_CODE *,
+                              std::string *) const;
     // Private helper to set all bound cmd buffers to INVALID state
     void InvalidateBoundCmdBuffers();
     bool some_update_; // has any part of the set ever been updated?
     VkDescriptorSet set_;
+    DESCRIPTOR_POOL_STATE *pool_state_;
     const DescriptorSetLayout *p_layout_;
     std::vector<std::unique_ptr<Descriptor>> descriptors_;
     // Ptr to device data used for various data look-ups

@@ -639,12 +639,6 @@ void init_depth_buffer(struct sample_info &info) {
     res = vkBindImageMemory(info.device, info.depth.image, info.depth.mem, 0);
     assert(res == VK_SUCCESS);
 
-    /* Set the image layout to depth stencil optimal */
-    set_image_layout(info, info.depth.image,
-                     view_info.subresourceRange.aspectMask,
-                     VK_IMAGE_LAYOUT_UNDEFINED,
-                     VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-
     /* Create image view */
     view_info.image = info.depth.image;
     res = vkCreateImageView(info.device, &view_info, NULL, &info.depth.view);
@@ -772,10 +766,6 @@ void init_presentable_image(struct sample_info &info) {
     // TODO: Deal with the VK_SUBOPTIMAL_KHR and VK_ERROR_OUT_OF_DATE_KHR
     // return codes
     assert(!res);
-
-    set_image_layout(info, info.buffers[info.current_buffer].image,
-                     VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 }
 
 void execute_queue_cmdbuf(struct sample_info &info,
@@ -892,25 +882,9 @@ void init_swap_chain(struct sample_info &info, VkImageUsageFlags usageFlags) {
         swapchainExtent = surfCapabilities.currentExtent;
     }
 
-    // If mailbox mode is available, use it, as is the lowest-latency non-
-    // tearing mode.  If not, try IMMEDIATE which will usually be available,
-    // and is fastest (though it tears).  If not, fall back to FIFO which is
-    // always available.
+    // The FIFO present mode is guaranteed by the spec to be supported
+    // Also note that current Android driver only supports FIFO
     VkPresentModeKHR swapchainPresentMode = VK_PRESENT_MODE_FIFO_KHR;
-    for (size_t i = 0; i < presentModeCount; i++) {
-        if (presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-            swapchainPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-            break;
-        }
-        if ((swapchainPresentMode != VK_PRESENT_MODE_MAILBOX_KHR) &&
-            (presentModes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)) {
-            swapchainPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-        }
-    }
-#ifdef __ANDROID__
-    // Current driver only support VK_PRESENT_MODE_FIFO_KHR.
-    swapchainPresentMode = VK_PRESENT_MODE_FIFO_KHR;
-#endif
 
     // Determine the number of VkImage's to use in the swap chain.
     // We need to acquire only 1 presentable image at at time.
@@ -943,7 +917,7 @@ void init_swap_chain(struct sample_info &info, VkImageUsageFlags usageFlags) {
 #ifndef __ANDROID__
     swapchain_ci.clipped = true;
 #else
-    swap_chain.clipped = false;
+    swapchain_ci.clipped = false;
 #endif
     swapchain_ci.imageColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
     swapchain_ci.imageUsage = usageFlags;
@@ -1153,7 +1127,7 @@ void init_renderpass(struct sample_info &info, bool include_depth, bool clear,
     attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     attachments[0].finalLayout = finalLayout;
     attachments[0].flags = 0;
 
@@ -1165,8 +1139,7 @@ void init_renderpass(struct sample_info &info, bool include_depth, bool clear,
         attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
-        attachments[1].initialLayout =
-            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         attachments[1].finalLayout =
             VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         attachments[1].flags = 0;
@@ -1824,9 +1797,6 @@ void init_image(struct sample_info &info, texture_object &texObj,
     res = vkBindImageMemory(info.device, mappableImage, mappableMemory, 0);
     assert(res == VK_SUCCESS);
 
-    set_image_layout(info, mappableImage, VK_IMAGE_ASPECT_COLOR_BIT,
-                     VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_GENERAL);
-
     res = vkEndCommandBuffer(info.cmd);
     assert(res == VK_SUCCESS);
     const VkCommandBuffer cmd_bufs[] = {info.cmd};
@@ -1900,7 +1870,8 @@ void init_image(struct sample_info &info, texture_object &texObj,
         texObj.mem = mappableMemory;
         texObj.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         set_image_layout(info, texObj.image, VK_IMAGE_ASPECT_COLOR_BIT,
-                         VK_IMAGE_LAYOUT_GENERAL, texObj.imageLayout);
+                         VK_IMAGE_LAYOUT_PREINITIALIZED, texObj.imageLayout,
+                         VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
         /* No staging resources to free later */
         info.stagingImage = VK_NULL_HANDLE;
         info.stagingMemory = VK_NULL_HANDLE;
@@ -1937,14 +1908,18 @@ void init_image(struct sample_info &info, texture_object &texObj,
         /* Since we're going to blit from the mappable image, set its layout to
          * SOURCE_OPTIMAL. Side effect is that this will create info.cmd */
         set_image_layout(info, mappableImage, VK_IMAGE_ASPECT_COLOR_BIT,
-                         VK_IMAGE_LAYOUT_GENERAL,
-                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                         VK_IMAGE_LAYOUT_PREINITIALIZED,
+                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         VK_PIPELINE_STAGE_HOST_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT);
 
         /* Since we're going to blit to the texture image, set its layout to
          * DESTINATION_OPTIMAL */
         set_image_layout(info, texObj.image, VK_IMAGE_ASPECT_COLOR_BIT,
                          VK_IMAGE_LAYOUT_UNDEFINED,
-                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT);
 
         VkImageCopy copy_region;
         copy_region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -1975,7 +1950,9 @@ void init_image(struct sample_info &info, texture_object &texObj,
         texObj.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         set_image_layout(info, texObj.image, VK_IMAGE_ASPECT_COLOR_BIT,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                         texObj.imageLayout);
+                         texObj.imageLayout,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 
         /* Remember staging resources to free later */
         info.stagingImage = mappableImage;
@@ -2174,6 +2151,7 @@ void destroy_renderpass(struct sample_info &info) {
 }
 
 void destroy_device(struct sample_info &info) {
+    vkDeviceWaitIdle(info.device);
     vkDestroyDevice(info.device, NULL);
 }
 

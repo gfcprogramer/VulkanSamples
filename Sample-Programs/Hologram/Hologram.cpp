@@ -743,7 +743,6 @@ void Hologram::draw_objects(Worker &worker)
         range.memory = frame_data_mem_;
         range.offset = (data.base - frame_data_[0].base) + sim_.objects()[worker.object_begin_].frame_data_offset;
         range.size = aligned_object_data_size * (worker.object_end_ - worker.object_begin_);
-
         vk::FlushMappedMemoryRanges(dev_, 1, &range);
     }
 }
